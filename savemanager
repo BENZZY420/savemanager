@@ -1,8 +1,10 @@
 local httpService = game:GetService('HttpService')
 
 local SaveManager = {} do
-	SaveManager.Folder = 'LinoriaLibSettings'
-	SaveManager.Ignore = {}
+    SaveManager.Folder = 'LinoriaLibSettings'
+    SaveManager.Ignore = {}
+    SaveManager.CustomSaveData = {}
+    SaveManager.CustomLoadData = {}
 	SaveManager.Parser = {
 		Toggle = {
 			Save = function(idx, object) 
@@ -79,62 +81,95 @@ local SaveManager = {} do
 	end
 
 	function SaveManager:Save(name)
+        if (not name) then
+            return false, 'no config file is selected'
+        end
+
+        local fullPath = self.Folder .. '/settings/' .. name .. '.json'
+
+        local data = {
+            objects = {},
+            custom = {}
+        }
+
+        -- Save UI elements
+        for idx, toggle in next, Toggles do
+            if self.Ignore[idx] then continue end
+            table.insert(data.objects, self.Parser[toggle.Type].Save(idx, toggle))
+        end
+
+        for idx, option in next, Options do
+            if not self.Parser[option.Type] then continue end
+            if self.Ignore[idx] then continue end
+            table.insert(data.objects, self.Parser[option.Type].Save(idx, option))
+        end
+
+        for name, callback in pairs(self.CustomSaveData) do
+            data.custom[name] = callback()
+        end
+
+        local success, encoded = pcall(httpService.JSONEncode, httpService, data)
+        if not success then
+            return false, 'failed to encode data'
+        end
+
+        writefile(fullPath, encoded)
+        return true
+    end
+
+
+    function SaveManager:Load(name)
+        if (not name) then
+            return false, 'no config file is selected'
+        end
+        
+        local file = self.Folder .. '/settings/' .. name .. '.json'
+        if not isfile(file) then return false, 'invalid file' end
+
+        local success, decoded = pcall(httpService.JSONDecode, httpService, readfile(file))
+        if not success then return false, 'decode error' end
+
+        for _, option in next, decoded.objects do
+            if self.Parser[option.type] then
+                task.spawn(function() self.Parser[option.type].Load(option.idx, option) end)
+            end
+        end
+
+        for name, callback in pairs(self.CustomLoadData) do
+            if decoded.custom[name] then
+                callback(decoded.custom[name])
+            end
+        end
+
+        return true
+    end
+
+	function SaveManager:Delete(name)
 		if (not name) then
 			return false, 'no config file is selected'
 		end
 
 		local fullPath = self.Folder .. '/settings/' .. name .. '.json'
-
-		local data = {
-			objects = {}
-		}
-
-		for idx, toggle in next, Toggles do
-			if self.Ignore[idx] then continue end
-
-			table.insert(data.objects, self.Parser[toggle.Type].Save(idx, toggle))
+		if not isfile(fullPath) then
+			return false, 'file does not exist'
 		end
 
-		for idx, option in next, Options do
-			if not self.Parser[option.Type] then continue end
-			if self.Ignore[idx] then continue end
-
-			table.insert(data.objects, self.Parser[option.Type].Save(idx, option))
-		end	
-
-		local success, encoded = pcall(httpService.JSONEncode, httpService, data)
-		if not success then
-			return false, 'failed to encode data'
-		end
-
-		writefile(fullPath, encoded)
-		return true
-	end
-
-	function SaveManager:Load(name)
-		if (not name) then
-			return false, 'no config file is selected'
-		end
-		
-		local file = self.Folder .. '/settings/' .. name .. '.json'
-		if not isfile(file) then return false, 'invalid file' end
-
-		local success, decoded = pcall(httpService.JSONDecode, httpService, readfile(file))
-		if not success then return false, 'decode error' end
-
-		for _, option in next, decoded.objects do
-			if self.Parser[option.type] then
-				task.spawn(function() self.Parser[option.type].Load(option.idx, option) end) -- task.spawn() so the config loading wont get stuck.
+		if isfile(self.Folder .. '/settings/autoload.txt') then
+			local autoloadConfig = readfile(self.Folder .. '/settings/autoload.txt')
+			if autoloadConfig == name then
+				delfile(self.Folder .. '/settings/autoload.txt')
+				SaveManager.AutoloadLabel:SetText('Current autoload config: none')
 			end
 		end
 
+		delfile(fullPath)
 		return true
 	end
 
 	function SaveManager:IgnoreThemeSettings()
 		self:SetIgnoreIndexes({ 
-			"BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor", -- themes
-			"ThemeManager_ThemeList", 'ThemeManager_CustomThemeList', 'ThemeManager_CustomThemeName', -- themes
+			"BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor",
+			"ThemeManager_ThemeList", 'ThemeManager_CustomThemeList', 'ThemeManager_CustomThemeName',
 		})
 	end
 
@@ -160,8 +195,6 @@ local SaveManager = {} do
 		for i = 1, #list do
 			local file = list[i]
 			if file:sub(-5) == '.json' then
-				-- i hate this but it has to be done ...
-
 				local pos = file:find('.json', 1, true)
 				local start = pos
 
@@ -196,7 +229,6 @@ local SaveManager = {} do
 			self.Library:Notify(string.format('Auto loaded config %q', name))
 		end
 	end
-
 
 	function SaveManager:BuildConfigSection(tab)
 		assert(self.Library, 'Must set SaveManager.Library')
@@ -247,6 +279,22 @@ local SaveManager = {} do
 		end)
 
 		section:AddButton('Refresh list', function()
+			Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
+			Options.SaveManager_ConfigList:SetValue(nil)
+		end)
+
+		section:AddButton('Delete config', function()
+			local name = Options.SaveManager_ConfigList.Value
+			if name == nil or name == '' then
+				return self.Library:Notify('No config selected', 2)
+			end
+
+			local success, err = self:Delete(name)
+			if not success then
+				return self.Library:Notify('Failed to delete config: ' .. err)
+			end
+
+			self.Library:Notify(string.format('Deleted config %q', name))
 			Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
 			Options.SaveManager_ConfigList:SetValue(nil)
 		end)
